@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>弦の反射シミュレーター（自動レイアウト調整）</title>
+    <style>
+        :root {
+            /* 画面に応じて自動スケール */
+            --pad: clamp(8px, 1.2vh, 14px);
+            --gap: clamp(8px, 1.2vh, 14px);
+
+            --ctrlPad: clamp(10px, 1.6vh, 18px);
+            --font: clamp(12px, 1.35vh, 14px);
+            --fontVal: clamp(12px, 1.45vh, 15px);
+
+            --btnFont: clamp(13px, 1.55vh, 16px);
+            --btnPy: clamp(9px, 1.25vh, 12px);
+            --btnPx: clamp(10px, 1.35vh, 14px);
+
+            --rangeH: clamp(22px, 2.4vh, 28px);
+            --radius: 14px;
+        }
+
+        /* さらに詰める“非常時モード”（JSが付与） */
+        body.compact {
+            --pad: 8px;
+            --gap: 8px;
+            --ctrlPad: 10px;
+            --font: 12px;
+            --fontVal: 12px;
+            --btnFont: 13px;
+            --btnPy: 8px;
+            --btnPx: 10px;
+            --rangeH: 22px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #121212;
+            color: #eee;
+            margin: 0;
+            padding: var(--pad);
+            height: 100dvh;
+            /* iOS SafariのUI変動に強い */
+            overflow: hidden;
+            /* “一画面に収める”ため基本スクロールなし */
+            touch-action: none;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            width: min(1100px, 98vw);
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+            /* ★これがないとcanvasが縮まらず見切れやすい */
+            gap: var(--gap);
+        }
+
+        canvas {
+            background: #000;
+            border-radius: var(--radius);
+            width: 100%;
+            flex: 1 1 auto;
+            /* 残りを全部canvasに */
+            min-height: 160px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, .6);
+            display: block;
+        }
+
+        .controls {
+            background: #252525;
+            padding: var(--ctrlPad);
+            border-radius: var(--radius);
+            display: grid;
+            gap: var(--gap);
+            align-items: start;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            /* ★自動列数 */
+            flex: 0 0 auto;
+            min-height: 0;
+        }
+
+        /* 上段に “再生系＋モード” をまとめて高さ節約 */
+        .topRow {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--gap);
+            align-items: stretch;
+        }
+
+        @media (max-width: 720px) {
+            .topRow {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .playback-group,
+        .mode-selector {
+            display: flex;
+            gap: var(--gap);
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        label {
+            font-size: var(--font);
+            display: flex;
+            justify-content: space-between;
+            font-weight: 800;
+            margin: 0;
+        }
+
+        span.value {
+            color: #81C784;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+            font-size: var(--fontVal);
+            font-weight: 900;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: var(--rangeH);
+            accent-color: #4CAF50;
+            cursor: pointer;
+        }
+
+        button {
+            flex: 1 1 160px;
+            padding: var(--btnPy) var(--btnPx);
+            border: none;
+            border-radius: 10px;
+            background: #444;
+            color: #fff;
+            font-weight: 900;
+            cursor: pointer;
+            transition: .15s;
+            font-size: var(--btnFont);
+            line-height: 1.1;
+            user-select: none;
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button.active {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76, 175, 80, .35);
+        }
+
+        .info {
+            grid-column: 1 / -1;
+            font-size: clamp(11px, 1.2vh, 13px);
+            color: #9a9a9a;
+            text-align: center;
+        }
+
+        /* 最終保険：極端に高さがない端末では、スクロール許可（ただし通常はcompactで回避） */
+        @media (max-height: 520px) {
+            body {
+                overflow: auto;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <canvas id="waveCanvas"></canvas>
+
+        <div class="controls" id="controls">
+            <div class="topRow">
+                <div class="playback-group">
+                    <button id="btn-start" class="active">▶ 再生</button>
+                    <button id="btn-pause">▮▮ 一時停止</button>
+                    <button id="btn-reset">↺ リセット</button>
+                </div>
+                <div class="mode-selector">
+                    <button id="mode-sum" class="active">合成波</button>
+                    <button id="mode-all">各反射波</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label>弦の長さ (L): <span class="value" id="val-length">1000</span></label>
+                <input type="range" id="param-length" min="400" max="1200" value="1000">
+            </div>
+            <div class="control-group">
+                <label>振幅 (A): <span class="value" id="val-amp">30</span></label>
+                <input type="range" id="param-amp" min="5" max="100" value="30">
+            </div>
+            <div class="control-group">
+                <label>波長 (λ): <span class="value" id="val-wavelength">400</span></label>
+                <input type="range" id="param-wavelength" min="50" max="2400" value="400">
+            </div>
+            <div class="control-group">
+                <label>波の速度 (v): <span class="value" id="val-speed">5</span></label>
+                <input type="range" id="param-speed" min="1" max="15" value="5" step="0.5">
+            </div>
+
+            <div class="info">※ 10回反射した波は順次消滅します（エネルギー減衰なし）。</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+        const controlsEl = document.getElementById('controls');
+
+        let params = { length: 1000, amp: 30, wavelength: 400, speed: 5, showMode: 'sum', isRunning: true };
+        let time = 0;
+        let animationId = null;
+        const MAX_REFLECTIONS = 10;
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+
+            canvas.width = Math.floor(rect.width * dpr);
+            canvas.height = Math.floor(rect.height * dpr);
+
+            // scale積み上げ防止
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            if (!params.isRunning) draw();
+        }
+
+        // ★UIが見切れるかを判定して compact をON/OFF
+        function fitUILayout() {
+            // 一旦compact解除して測る
+            document.body.classList.remove('compact');
+
+            // 次フレームで計測（レイアウト確定後）
+            requestAnimationFrame(() => {
+                const viewH = window.innerHeight; // d vh相当
+                const containerRect = document.querySelector('.container').getBoundingClientRect();
+                const overflow = containerRect.bottom - viewH;
+
+                // ちょっとでも見切れたらcompact
+                if (overflow > 1) {
+                    document.body.classList.add('compact');
+                } else {
+                    document.body.classList.remove('compact');
+                }
+
+                // compact適用後にもう一度canvas再計算
+                requestAnimationFrame(() => resizeCanvas());
+            });
+        }
+
+        window.addEventListener('resize', () => {
+            fitUILayout();
+        }, { passive: true });
+
+        // iOSのアドレスバー出入りなどでも再評価したい
+        window.addEventListener('orientationchange', () => {
+            fitUILayout();
+        }, { passive: true });
+
+        // 再生・一時停止・リセット
+        function startLoop() {
+            if (!params.isRunning) {
+                params.isRunning = true;
+                document.getElementById('btn-start').classList.add('active');
+                document.getElementById('btn-pause').classList.remove('active');
+                updateFrame();
+            }
+        }
+        function pauseLoop() {
+            params.isRunning = false;
+            document.getElementById('btn-pause').classList.add('active');
+            document.getElementById('btn-start').classList.remove('active');
+            cancelAnimationFrame(animationId);
+        }
+        document.getElementById('btn-start').addEventListener('click', startLoop);
+        document.getElementById('btn-pause').addEventListener('click', pauseLoop);
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            time = 0;
+            pauseLoop();
+            draw();
+        });
+
+        // スライダー連動
+        ['length', 'amp', 'wavelength', 'speed'].forEach(id => {
+            document.getElementById('param-' + id).addEventListener('input', (e) => {
+                params[id] = parseFloat(e.target.value);
+                document.getElementById('val-' + id).textContent = params[id];
+                if (!params.isRunning) draw();
+            });
+        });
+
+        // モード切替
+        document.querySelectorAll('.mode-selector button').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                params.showMode = e.target.id === 'mode-sum' ? 'sum' : 'all';
+                document.getElementById('mode-sum').classList.toggle('active', params.showMode === 'sum');
+                document.getElementById('mode-all').classList.toggle('active', params.showMode === 'all');
+                if (!params.isRunning) draw();
+            });
+        });
+
+        function calculateWave(n, x, t, L) {
+            if (n > MAX_REFLECTIONS) return 0;
+            const k = (2 * Math.PI) / params.wavelength;
+            const omega = k * params.speed;
+            const pathLength = (n % 2 === 0) ? (n * L + x) : (n * L + (L - x));
+            if (params.speed * t < pathLength) return 0;
+            const phase = omega * t - k * pathLength + (n * Math.PI);
+            return params.amp * Math.sin(phase);
+        }
+
+        function draw() {
+            const dpr = window.devicePixelRatio || 1;
+            const canvasW = canvas.width / dpr;
+            const canvasH = canvas.height / dpr;
+
+            ctx.clearRect(0, 0, canvasW, canvasH);
+
+            const L = params.length;
+            const centerX = (canvasW - L) / 2;
+            const centerY = canvasH / 2;
+
+            // ガイドライン（弦）
+            ctx.beginPath();
+            ctx.strokeStyle = '#333';
+            ctx.setLineDash([5, 5]);
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX + L, centerY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            if (params.showMode === 'all') {
+                for (let n = 0; n <= MAX_REFLECTIONS; n++) {
+                    ctx.beginPath();
+                    const opacity = Math.max(0.1, 1 - n / MAX_REFLECTIONS);
+                    ctx.strokeStyle = `rgba(76, 175, 80, ${opacity})`;
+                    ctx.lineWidth = 1.5;
+                    for (let x = 0; x <= L; x += 2) {
+                        const y = calculateWave(n, x, time, L);
+                        x === 0 ? ctx.moveTo(centerX + x, centerY + y) : ctx.lineTo(centerX + x, centerY + y);
+                    }
+                    ctx.stroke();
+                }
+            } else {
+                ctx.beginPath();
+                ctx.strokeStyle = '#4CAF50';
+                ctx.lineWidth = 4;
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'round';
+                for (let x = 0; x <= L; x += 2) {
+                    let totalY = 0;
+                    for (let n = 0; n <= MAX_REFLECTIONS; n++) {
+                        totalY += calculateWave(n, x, time, L);
+                    }
+                    x === 0 ? ctx.moveTo(centerX + x, centerY + totalY) : ctx.lineTo(centerX + x, centerY + totalY);
+                }
+                ctx.stroke();
+            }
+
+            // 固定端
+            ctx.fillStyle = '#fff';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#fff';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 6, 0, Math.PI * 2);
+            ctx.arc(centerX + L, centerY, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+
+        function updateFrame() {
+            draw();
+            if (params.isRunning) {
+                time += 0.8;
+                animationId = requestAnimationFrame(updateFrame);
+            }
+        }
+
+        // 初期化
+        fitUILayout();
+        updateFrame();
+    </script>
+</body>
+
+</html>
